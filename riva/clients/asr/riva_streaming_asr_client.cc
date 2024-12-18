@@ -63,6 +63,7 @@ DEFINE_string(
     output_filename, "final_transcripts.json",
     "Filename of .json file containing output transcripts");
 DEFINE_string(model_name, "", "Name of the TRTIS model to use");
+DEFINE_bool(list_models, false, "List available models on server");
 DEFINE_string(language_code, "en-US", "Language code of the model to use");
 DEFINE_string(boosted_words_file, "", "File with a list of words to boost. One line per word.");
 DEFINE_double(boosted_words_score, 10., "Score by which to boost the boosted words");
@@ -76,6 +77,22 @@ DEFINE_bool(
     "Whether to use SSL credentials or not. If ssl_cert is specified, "
     "this is assumed to be true");
 DEFINE_string(metadata, "", "Comma separated key-value pair(s) of metadata to be sent to server");
+DEFINE_int32(
+    start_history, -1, "Value (in milliseconds) to detect and initiate start of speech utterance");
+DEFINE_double(
+    start_threshold, -1.,
+    "Threshold value to determine at what percentage start of speech is initiated");
+DEFINE_int32(stop_history, -1, "Value (in milliseconds) to detect endpoint and reset decoder");
+DEFINE_double(stop_threshold, -1., "Threshold value to determine when endpoint detected");
+DEFINE_int32(
+    stop_history_eou, -1,
+    "Value (in milliseconds) to detect endpoint and generate an intermediate final transcript");
+DEFINE_double(
+    stop_threshold_eou, -1.,
+    "Threshold value for likelihood of blanks before detecting end of utterance");
+DEFINE_string(
+    custom_configuration, "",
+    "Custom configurations to be sent to the server as key value pairs <key:value,key:value,...>");
 
 void
 signal_handler(int signal_num)
@@ -117,7 +134,16 @@ main(int argc, char** argv)
   str_usage << "           --boosted_words_file=<string>" << std::endl;
   str_usage << "           --boosted_words_score=<float>" << std::endl;
   str_usage << "           --ssl_cert=<filename>" << std::endl;
+  str_usage << "           --model_name=<model>" << std::endl;
+  str_usage << "           --list_models" << std::endl;
   str_usage << "           --metadata=<key,value,...>" << std::endl;
+  str_usage << "           --start_history=<int>" << std::endl;
+  str_usage << "           --start_threshold=<float>" << std::endl;
+  str_usage << "           --stop_history=<int>" << std::endl;
+  str_usage << "           --stop_history_eou=<int>" << std::endl;
+  str_usage << "           --stop_threshold=<float>" << std::endl;
+  str_usage << "           --stop_threshold_eou=<float>" << std::endl;
+  str_usage << "           --custom_configuration=<key:value,key:value,...>" << std::endl;
   gflags::SetUsageMessage(str_usage.str());
   gflags::SetVersionString(::riva::utils::kBuildScmRevision);
 
@@ -159,12 +185,32 @@ main(int argc, char** argv)
     return 1;
   }
 
+  if (FLAGS_list_models) {
+    std::unique_ptr<nr_asr::RivaSpeechRecognition::Stub> asr_stub_(
+        nr_asr::RivaSpeechRecognition::NewStub(grpc_channel));
+    grpc::ClientContext asr_context;
+    nr_asr::RivaSpeechRecognitionConfigRequest asr_request;
+    nr_asr::RivaSpeechRecognitionConfigResponse asr_response;
+    asr_stub_->GetRivaSpeechRecognitionConfig(&asr_context, asr_request, &asr_response);
+
+    for (int i = 0; i < asr_response.model_config_size(); i++) {
+      if (asr_response.model_config(i).parameters().find("type")->second == "online") {
+        std::cout << "'" << asr_response.model_config(i).parameters().find("language_code")->second
+                  << "': '" << asr_response.model_config(i).model_name() << "'" << std::endl;
+      }
+    }
+
+    return 0;
+  }
+
   StreamingRecognizeClient recognize_client(
       grpc_channel, FLAGS_num_parallel_requests, FLAGS_language_code, FLAGS_max_alternatives,
       FLAGS_profanity_filter, FLAGS_word_time_offsets, FLAGS_automatic_punctuation,
       /* separate_recognition_per_channel*/ false, FLAGS_print_transcripts, FLAGS_chunk_duration_ms,
       FLAGS_interim_results, FLAGS_output_filename, FLAGS_model_name, FLAGS_simulate_realtime,
-      FLAGS_verbatim_transcripts, FLAGS_boosted_words_file, FLAGS_boosted_words_score);
+      FLAGS_verbatim_transcripts, FLAGS_boosted_words_file, FLAGS_boosted_words_score,
+      FLAGS_start_history, FLAGS_start_threshold, FLAGS_stop_history, FLAGS_stop_history_eou,
+      FLAGS_stop_threshold, FLAGS_stop_threshold_eou, FLAGS_custom_configuration);
 
   if (FLAGS_audio_file.size()) {
     return recognize_client.DoStreamingFromFile(

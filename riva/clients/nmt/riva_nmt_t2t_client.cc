@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <regex>
 #include <thread>
 
 #include "riva/clients/utils/grpc.h"
@@ -32,7 +33,6 @@ DEFINE_string(source_language_code, "en-US", "Language code for the input text")
 DEFINE_string(target_language_code, "en-US", "Language code for the output text");
 DEFINE_string(model_name, "", "Model to use");
 DEFINE_bool(list_models, false, "List available models on server");
-DEFINE_bool(print_line_numbers, false, "Prepend line number to translated texts");
 DEFINE_int32(num_iterations, 1, "Number of times to loop over text");
 DEFINE_int32(num_parallel_requests, 1, "Number of parallel requests");
 DEFINE_string(ssl_cert, "", "Path to SSL client certificates file");
@@ -42,13 +42,17 @@ DEFINE_bool(
     "Whether to use SSL credentials or not. If ssl_cert is specified, "
     "this is assumed to be true");
 DEFINE_string(metadata, "", "Comma separated key-value pair(s) of metadata to be sent to server");
+DEFINE_string(
+    dnt_phrases_file, "",
+    "File with a list of words to be custom translated. Word and translation in a line.");
 
 int
 translateBatch(
     std::unique_ptr<nr_nmt::RivaTranslation::Stub> nmt,
     std::queue<std::vector<std::pair<int, std::string>>>& work,
     const std::string target_language_code, const std::string source_language_code,
-    const std::string model_name, std::mutex& mtx, std::vector<double>& latencies, std::mutex& lmtx)
+    const std::string model_name, std::mutex& mtx, std::vector<double>& latencies, std::mutex& lmtx,
+    std::vector<nr_nmt::TranslateTextResponse>& responses, std::string& dnt_phrases)
 {
   while (1) {
     std::vector<std::pair<int, std::string>> pairs;
@@ -68,10 +72,12 @@ translateBatch(
     grpc::ClientContext context;
     nr_nmt::TranslateTextRequest request;
     nr_nmt::TranslateTextResponse response;
+
     request.set_model(model_name);
     request.set_source_language(source_language_code);
     request.set_target_language(target_language_code);
     *request.mutable_texts() = {text.begin(), text.end()};
+    request.add_dnt_phrases(dnt_phrases);
     // std::cout << request.DebugString() << std::endl;
 
     auto start = std::chrono::steady_clock::now();
@@ -79,28 +85,83 @@ translateBatch(
     if (!rpc_status.ok()) {
       LOG(ERROR) << rpc_status.error_message();
     }
+    responses.push_back(response);
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> duration = end - start;
     {
       std::lock_guard<std::mutex> lguard(lmtx);
       latencies.push_back(duration.count());
     }
-    // auto untranslated = text.begin();
-
-    auto current_line = pairs[0].first;
-    for (auto i : response.translations()) {
-      // std::cout << *untranslated << "->" << i.text() << std::endl;
-      // untranslated++;
-      if (FLAGS_print_line_numbers) {
-        std::cout << current_line << ":" << i.text() << std::endl;
-      } else {
-        std::cout << i.text() << std::endl;
-      }
-      current_line++;
-    }
   }
 }
 
+int
+countWords(const std::string& text)
+{
+  int wordCount = 0;
+  bool wasSpace = true;
+  for (char c : text) {
+    if (std::isspace(c)) {
+      if (!wasSpace) {
+        wordCount++;
+      }
+      wasSpace = true;
+    } else {
+      wasSpace = false;
+    }
+  }
+  if (!wasSpace) {
+    wordCount++;
+  }
+  return wordCount;
+}
+
+std::string
+ReadDntPhrasesFile(const std::string& dnt_phrases_file)
+{
+  std::string dnt_phrases_string;
+  if (!dnt_phrases_file.empty()) {
+    std::ifstream infile(dnt_phrases_file);
+
+    if (infile.is_open()) {
+      std::string line;
+
+      while (std::getline(infile, line)) {
+        // Trim leading and trailing whitespaces
+        line = std::regex_replace(line, std::regex("^ +| +$"), "");
+
+        if (!line.empty()) {
+          size_t pos = line.find("##");
+          std::string key, value;
+
+          if (pos != std::string::npos) {
+            // Line contains "##"
+            key = line.substr(0, pos);
+            value = line.substr(pos + 2);
+          } else {
+            // Line doesn't contain "##"
+            key = line;
+            value = "";
+          }
+
+          // Trim key and value
+          key = std::regex_replace(key, std::regex("^ +| +$"), "");
+          value = std::regex_replace(value, std::regex("^ +| +$"), "");
+
+          // Append the key-value pair to the dictionary string
+          if (!dnt_phrases_string.empty()) {
+            dnt_phrases_string += ",";
+          }
+          dnt_phrases_string += key + "##" + value;
+        }
+      }
+    } else {
+      std::string err = "Could not open file " + dnt_phrases_file;
+      throw std::runtime_error(err);
+    }
+  }
+  return dnt_phrases_string;
+}
 
 int
 main(int argc, char** argv)
@@ -124,6 +185,7 @@ main(int argc, char** argv)
   str_usage << "           --model_name=<model>" << std::endl;
   str_usage << "           --list_models" << std::endl;
   str_usage << "           --metadata=<key,value,...>" << std::endl;
+  str_usage << "           --dnt_phrases_file=<string>" << std::endl;
   gflags::SetUsageMessage(str_usage.str());
 
   if (argc < 2) {
@@ -139,6 +201,20 @@ main(int argc, char** argv)
     return 1;
   }
 
+  if (FLAGS_batch_size <= 0) {
+    LOG(ERROR) << "Invalid batch size: " << FLAGS_batch_size;
+    return 1;
+  }
+
+  if (FLAGS_num_iterations <= 0) {
+    LOG(ERROR) << "Invalid num iterations: " << FLAGS_num_iterations;
+    return 1;
+  }
+
+  if (FLAGS_num_parallel_requests <= 0) {
+    LOG(ERROR) << "Invalid num parallel requests: " << FLAGS_num_parallel_requests;
+    return 1;
+  }
 
   bool flag_set = gflags::GetCommandLineFlagInfoOrDie("riva_uri").is_default;
   const char* riva_uri = getenv("RIVA_URI");
@@ -175,15 +251,18 @@ main(int argc, char** argv)
     return 0;
   }
 
+  std::string dnt_phrases = ReadDntPhrasesFile(FLAGS_dnt_phrases_file);
 
   if (FLAGS_text != "") {
     nr_nmt::TranslateTextRequest request;
     nr_nmt::TranslateTextResponse response;
+    VLOG(1) << "Setting up t2t config.";
     request.set_model(FLAGS_model_name);
     request.set_source_language(FLAGS_source_language_code);
     request.set_target_language(FLAGS_target_language_code);
 
     request.add_texts(FLAGS_text);
+    request.add_dnt_phrases(dnt_phrases);
     grpc::Status rpc_status = nmt->TranslateText(&context, request, &response);
     if (!rpc_status.ok()) {
       LOG(ERROR) << rpc_status.error_message();
@@ -202,31 +281,37 @@ main(int argc, char** argv)
     // std::vector<std::vector<std::vector<std::string>>> inputs;
 
     std::string str;
-    int count = 0;
+    int count = 0, total_words = 0;
     std::vector<std::pair<int, std::string>> batch;
-    std::queue<std::vector<std::pair<int, std::string>>> inputs;
+    std::vector<std::vector<std::pair<int, std::string>>> all_requests;
     std::ifstream nmt_file(FLAGS_text_file);
     if (nmt_file.fail()) {
       LOG(ERROR) << FLAGS_text_file << " failed to load, please check file " << std::endl;
       return 1;
     }
 
-    int bs = FLAGS_batch_size;
-
     while (std::getline(nmt_file, str)) {
-      if (count && count % bs == 0) {
-        inputs.push(batch);
+      if ((batch.size() > 0) && ((int)batch.size() == FLAGS_batch_size)) {
+        all_requests.push_back(batch);
         batch.clear();
       }
-      batch.push_back(make_pair(count, str));
-      count++;
+      if (!str.empty()) {
+        total_words += countWords(str);
+        batch.push_back(make_pair(count, str));
+        count++;
+      }
     }
-
 
     if (batch.size() > 0) {
-      inputs.push(batch);
+      all_requests.push_back(batch);
     }
-    auto batch_count = inputs.size();
+
+    if (!all_requests.size()) {
+      LOG(ERROR) << "No text to process";
+      return 1;
+    }
+
+    auto request_count = all_requests.size();
 
     auto start = std::chrono::steady_clock::now();
     std::mutex mtx;   // queue
@@ -234,34 +319,49 @@ main(int argc, char** argv)
     std::vector<double> latencies;
 
     for (int iters = 0; iters < FLAGS_num_iterations; iters++) {
+      std::queue<std::vector<std::pair<int, std::string>>> request_queue;
       std::vector<std::thread> workers;
+      std::vector<std::vector<nr_nmt::TranslateTextResponse>> responses(
+          FLAGS_num_parallel_requests);
+
+      for (auto& request : all_requests) {
+        request_queue.push(request);
+      }
 
       for (int i = 0; i < FLAGS_num_parallel_requests; i++) {
         workers.push_back(std::thread([&, i]() {
           std::unique_ptr<nr_nmt::RivaTranslation::Stub> nmt2(
               nr_nmt::RivaTranslation::NewStub(grpc_channel));
           translateBatch(
-              std::move(nmt2), inputs, FLAGS_target_language_code, FLAGS_source_language_code,
-              FLAGS_model_name, mtx, latencies, lmtx);
+              std::move(nmt2), request_queue, FLAGS_target_language_code,
+              FLAGS_source_language_code, FLAGS_model_name, mtx, latencies, lmtx, responses.at(i),
+              dnt_phrases);
         }));
       }
 
       std::for_each(workers.begin(), workers.end(), [](std::thread& worker) { worker.join(); });
+
+      for (int i = 0; i < FLAGS_num_parallel_requests; i++) {
+        for (auto response : responses.at(i))
+          for (auto i : response.translations()) {
+            std::cout << i.text() << std::endl;
+          }
+      }
     }
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> total = end - start;
-    std::cout << FLAGS_model_name << "-" << FLAGS_batch_size << "-" << FLAGS_source_language_code
-              << "-" << FLAGS_target_language_code << ",count:" << count
-              << ",total time: " << total.count()
-              << ",requests/second: " << batch_count / total.count()
-              << ",translations/second: " << count / total.count() << std::endl;
+    LOG(INFO) << FLAGS_model_name << "-" << FLAGS_batch_size << "-" << FLAGS_source_language_code
+              << "-" << FLAGS_target_language_code << ",lines: " << count
+              << ",tokens: " << total_words << ",total time: " << total.count()
+              << ",requests/second: " << FLAGS_num_iterations * request_count / total.count()
+              << ",tokens/second: " << FLAGS_num_iterations * total_words / total.count();
 
     std::sort(latencies.begin(), latencies.end());
     auto size = latencies.size();
 
-    std::cout << "P90: " << latencies[static_cast<int>(0.9 * size)]
+    LOG(INFO) << "P90: " << latencies[static_cast<int>(0.9 * size)]
               << ",P95: " << latencies[static_cast<int>(0.95 * size)]
-              << ",P99: " << latencies[static_cast<int>(0.99 * size)] << std::endl;
+              << ",P99: " << latencies[static_cast<int>(0.99 * size)];
   }
 
 
