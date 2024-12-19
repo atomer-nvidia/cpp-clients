@@ -71,7 +71,7 @@ ReadUserDictionaryFile(const std::string& dictionary_file)
       while (std::getline(infile, line)) {
         // Trim leading and trailing whitespaces
         line = std::regex_replace(line, std::regex("^ +| +$"), "");
-        int pos = line.find("  ");
+        size_t pos = line.find("  ");
 
         if (pos != std::string::npos) {
           std::string key = line.substr(0, pos);

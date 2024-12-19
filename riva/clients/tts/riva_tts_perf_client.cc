@@ -90,7 +90,7 @@ ReadUserDictionaryFile(const std::string& dictionary_file)
       while (std::getline(infile, line)) {
         // Trim leading and trailing whitespaces
         line = std::regex_replace(line, std::regex("^ +| +$"), "");
-        int pos = line.find("  ");
+        size_t pos = line.find("  ");
 
         if (pos != std::string::npos) {
           std::string key = line.substr(0, pos);
@@ -163,7 +163,7 @@ synthesizeBatch(
     }
     zero_shot_data->set_sample_rate_hz(zero_shot_sample_rate);
     zero_shot_data->set_quality(zero_shot_quality);
-    if (FLAGS_zero_shot_text_prompt) {
+    if (not FLAGS_zero_shot_text_prompt.empty()) {
       zero_shot_data->set_text_prompt(FLAGS_zero_shot_text_prompt);
       assert(!FLAGS_zero_shot_transcript_target.empty());
       zero_shot_data->set_transcript_target(FLAGS_zero_shot_transcript_target);
