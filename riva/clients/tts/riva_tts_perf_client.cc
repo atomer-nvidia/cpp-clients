@@ -64,6 +64,7 @@ DEFINE_int32(zero_shot_quality, 20, "Required quality of output audio, ranges be
 DEFINE_string(custom_dictionary, "", " User dictionary containing graph-to-phone custom words");
 DEFINE_string(zero_shot_transcript, "", "Transcript corresponding to Zero shot audio prompt.");
 DEFINE_double(speed, 1.0, "Speed of generated audio, ranges between 0.5-2.0");
+DEFINE_double(exaggeration_factor, 1.0, "Exaggeration factor for generated audio, ranges between 0.0-2.0");
 
 static const std::string LC_enUS = "en-US";
 
@@ -115,7 +116,7 @@ synthesizeBatch(
     std::unique_ptr<nr_tts::RivaSpeechSynthesis::Stub> tts, std::string text, std::string language,
     uint32_t rate, std::string voice_name, std::string filepath,
     std::string zero_shot_prompt_filename, int32_t zero_shot_quality, std::string custom_dictionary,
-    std::string zero_shot_transcript, double speed)
+    std::string zero_shot_transcript, double speed, double exaggeration_factor)
 {
   // Parse command line arguments.
   nr_tts::SynthesizeSpeechRequest request;
@@ -168,6 +169,11 @@ synthesizeBatch(
     if (not FLAGS_zero_shot_transcript.empty()) {
       zero_shot_data->set_transcript(FLAGS_zero_shot_transcript);
     }
+    if (exaggeration_factor < 0.0 || exaggeration_factor > 2.0) {
+      LOG(ERROR) << "Exaggeration factor must be between 0.0 and 2.0" << std::endl;
+      return -1;
+    }
+    zero_shot_data->set_exaggeration_factor(exaggeration_factor);
   }
 
   // Send text content using Synthesize().
@@ -211,7 +217,7 @@ synthesizeOnline(
     std::unique_ptr<nr_tts::RivaSpeechSynthesis::Stub> tts, std::string text, std::string language,
     uint32_t rate, std::string voice_name, double* time_to_first_chunk,
     std::vector<double>* time_to_next_chunk, size_t* num_samples, std::string filepath,
-    std::string zero_shot_prompt_filename, int32_t zero_shot_quality, double speed)
+    std::string zero_shot_prompt_filename, int32_t zero_shot_quality, double speed, double exaggeration_factor)
 {
   nr_tts::SynthesizeSpeechRequest request;
   request.set_text(text);
@@ -260,6 +266,11 @@ synthesizeOnline(
     }
     zero_shot_data->set_sample_rate_hz(zero_shot_sample_rate);
     zero_shot_data->set_quality(zero_shot_quality);
+    if (exaggeration_factor < 0.0 || exaggeration_factor > 2.0) {
+      LOG(ERROR) << "Exaggeration factor must be between 0.0 and 2.0" << std::endl;
+      return;
+    }
+    zero_shot_data->set_exaggeration_factor(exaggeration_factor);
   }
 
 
@@ -367,7 +378,7 @@ main(int argc, char** argv)
   str_usage << "           --zero_shot_transcript=<text>" << std::endl;
   str_usage << "           --custom_dictionary=<filename> " << std::endl;
   str_usage << "           --speed=<speed> " << std::endl;
-
+  str_usage << "           --exaggeration_factor=<exaggeration_factor> " << std::endl;
   gflags::SetUsageMessage(str_usage.str());
   gflags::SetVersionString(::riva::utils::kBuildScmRevision);
 
