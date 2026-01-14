@@ -63,7 +63,8 @@ DEFINE_string(
 DEFINE_int32(zero_shot_quality, 20, "Required quality of output audio, ranges between 1-40.");
 DEFINE_string(custom_dictionary, "", " User dictionary containing graph-to-phone custom words");
 DEFINE_string(zero_shot_transcript, "", "Transcript corresponding to Zero shot audio prompt.");
-DEFINE_double(exaggeration_factor, 1.0, "Exaggeration factor for generated audio, ranges between 0.0-2.0");
+DEFINE_double(
+    exaggeration_factor, 1.0, "Exaggeration factor for generated audio, ranges between 0.0-2.0");
 
 static const std::string LC_enUS = "en-US";
 
@@ -493,7 +494,7 @@ main(int argc, char** argv)
               std::move(tts), sentences[i][s].second, FLAGS_language, rate, FLAGS_voice_name,
               &time_to_first_chunk, time_to_next_chunk, &num_samples,
               std::to_string(sentences[i][s].first) + ".wav", FLAGS_zero_shot_audio_prompt,
-              FLAGS_zero_shot_quality);
+              FLAGS_zero_shot_quality, FLAGS_exaggeration_factor);
           latencies_first_chunk[i]->push_back(time_to_first_chunk);
           latencies_next_chunks[i]->insert(
               latencies_next_chunks[i]->end(), time_to_next_chunk->begin(),
@@ -569,7 +570,8 @@ main(int argc, char** argv)
           int32_t num_samples = synthesizeBatch(
               std::move(tts), sentences[i][s].second, FLAGS_language, rate, FLAGS_voice_name,
               std::to_string(sentences[i][s].first) + ".wav", FLAGS_zero_shot_audio_prompt,
-              FLAGS_zero_shot_quality, FLAGS_custom_dictionary, FLAGS_zero_shot_transcript);
+              FLAGS_zero_shot_quality, FLAGS_custom_dictionary, FLAGS_zero_shot_transcript,
+              FLAGS_exaggeration_factor);
           results_num_samples[i]->push_back(num_samples);
         }
       }));
