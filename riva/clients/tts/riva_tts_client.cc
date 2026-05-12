@@ -8,6 +8,8 @@
 #include <grpcpp/grpcpp.h>
 #include <strings.h>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -56,6 +58,10 @@ DEFINE_string(custom_dictionary, "", " User dictionary containing graph-to-phone
 DEFINE_string(zero_shot_transcript, "", "Transcript corresponding to Zero shot audio prompt.");
 DEFINE_uint64(timeout_ms, 10000, "Timeout for GRPC channel creation");
 DEFINE_uint64(max_grpc_message_size, MAX_GRPC_MESSAGE_SIZE, "Max GRPC message size");
+DEFINE_string(
+    custom_configuration, "",
+    "Custom configurations to be sent to the server as key value pairs "
+    "<key:value,key:value,...>");
 
 static const std::string LC_enUS = "en-US";
 
@@ -94,6 +100,31 @@ ReadUserDictionaryFile(const std::string& dictionary_file)
   return dictionary_string;
 }
 
+void
+AddCustomConfiguration(
+    nr_tts::SynthesizeSpeechRequest& request, const std::string& custom_configuration)
+{
+  if (custom_configuration.empty()) {
+    return;
+  }
+  std::string config_str = custom_configuration;
+  config_str.erase(
+      std::remove_if(config_str.begin(), config_str.end(), ::isspace), config_str.end());
+  if (config_str.empty()) {
+    return;
+  }
+  auto pairs = split(config_str, ',');
+  for (const auto& pair : pairs) {
+    auto colon_pos = pair.find(':');
+    if (colon_pos == std::string::npos) {
+      throw std::runtime_error(
+          "Invalid custom_configuration entry '" + pair + "' (expected key:value)");
+    }
+    (*request.mutable_custom_configuration())[pair.substr(0, colon_pos)] =
+        pair.substr(colon_pos + 1);
+  }
+}
+
 int
 main(int argc, char** argv)
 {
@@ -121,6 +152,7 @@ main(int argc, char** argv)
   str_usage << "           --custom_dictionary=<filename> " << std::endl;
   str_usage << "           --timeout_ms=<timeout_ms> " << std::endl;
   str_usage << "           --max_grpc_message_size=<max_grpc_message_size> " << std::endl;
+  str_usage << "           --custom_configuration=<key:value,key:value,...> " << std::endl;
   gflags::SetUsageMessage(str_usage.str());
   gflags::SetVersionString(::riva::utils::kBuildScmRevision);
 
@@ -173,8 +205,7 @@ main(int argc, char** argv)
     auto creds = riva::clients::CreateChannelCredentials(
         FLAGS_use_ssl, FLAGS_ssl_root_cert, FLAGS_ssl_client_key, FLAGS_ssl_client_cert,
         FLAGS_metadata);
-    grpc_channel = riva::clients::CreateChannelBlocking(
-        FLAGS_riva_uri, creds, FLAGS_timeout_ms, FLAGS_max_grpc_message_size);
+    grpc_channel = riva::clients::CreateChannelBlocking(FLAGS_riva_uri, creds, FLAGS_timeout_ms, FLAGS_max_grpc_message_size);
   }
   catch (const std::exception& e) {
     std::cerr << "Error creating GRPC channel: " << e.what() << std::endl;
@@ -240,6 +271,14 @@ main(int argc, char** argv)
     if (not FLAGS_online and not FLAGS_zero_shot_transcript.empty()) {
       zero_shot_data->set_transcript(FLAGS_zero_shot_transcript);
     }
+  }
+
+  try {
+    AddCustomConfiguration(request, FLAGS_custom_configuration);
+  }
+  catch (const std::exception& e) {
+    LOG(ERROR) << e.what() << std::endl;
+    return -1;
   }
 
   // Send text content using Synthesize().
